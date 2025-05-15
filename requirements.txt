@@ -1,0 +1,73 @@
+# Core Packages
+# These are fundamental libraries for data manipulation and scientific computing.
+numpy
+pandas
+scipy
+scikit-learn
+
+# Data Storage
+# Libraries for interacting with data storage and databases.
+google-cloud-bigquery
+google-cloud-storage
+pyarrow
+
+# Machine Learning
+# Frameworks and tools for building and deploying machine learning models.
+tensorflow-macos==2.10.0; sys_platform == 'darwin' and 'ARM' in platform_version
+tensorflow==2.10.0; sys_platform == 'darwin' and 'ARM' not in platform_version
+tensorflow==2.10.0; sys_platform != 'darwin'
+mlflow==2.1.1
+tpot
+imblearn
+
+# Visualization
+# Tools for data visualization.
+matplotlib
+seaborn
+yellowbrick
+
+# Jupyter
+# Packages for working with Jupyter notebooks.
+notebook==6.5.5
+notebook_shim==0.2.3
+ipykernel
+ipywidgets
+
+# Utilities
+# General utility libraries for various tasks
+colorama
+pygeohash
+pytest
+wandb
+icecream
+
+
+# API
+# Libraries for building and testing APIs.
+fastapi
+uvicorn
+httpx
+pytest-asyncio
+
+
+# Database
+# Tools for database connectivity and operations.
+psycopg2-binary
+mysql.connector
+
+
+# Miscellaneous
+# Other tools and libraries for specific functionalities.
+openpyxl
+python-dotenv
+prefect==2.8.1
+
+
+# AutoNote Dependencies
+# Specific libraries for AutoNote functionality.
+notion_client
+gspread
+exchangelib
+textblob
+openai
+sketch
