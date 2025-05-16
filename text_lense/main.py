@@ -1,5 +1,6 @@
 import pandas as pd
 from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
+import streamlit as st
 
 # Initialize sentiment analysis pipeline
 sentiment_task = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
@@ -110,4 +111,4 @@ if __name__ == "__main__":
         }
     ]
     analysis_df = analyze_text(sample_questions_data)
-    print(analysis_df)
+    st.dataframe(analysis_df)
