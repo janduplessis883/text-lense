@@ -2,3 +2,7 @@ pandas
 transformers==4.37.0
 streamlit
 plotly
+torch
+torchvision
+torchtext
+torchmetrics
