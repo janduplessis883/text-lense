@@ -1,0 +1,19 @@
+[theme]
+
+# Base colors can be 'light' or 'dark'
+base = "light"
+
+# Primary color for your app, specified as a hex or named CSS color
+primaryColor = "#004768"
+
+# Background color for your app
+backgroundColor = "#ffffff"
+
+# Secondary background color for your app
+secondaryBackgroundColor = "#f4f4f5"
+
+# Text color for your app
+textColor = "#334155"
+
+# Font for your app, choose between "sans serif", "serif", and "monospace"
+font = "sans serif"

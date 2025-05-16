@@ -6,8 +6,10 @@ with open('requirements.txt') as f:
 requirements = [x.strip() for x in content]
 
 setup(
-    name='autonote',
-    description="Code snippet manager for Jupyter Notebook & Notebook enhancements + data science helper functions",
+    name='text_lense',
+    version='0.1.0',
+    author='Jan du Plessis',
+    description="Free-text analysis tool for unstructured text based surveys.",
     packages=find_packages(),  # It will find all packages in your directory
     install_requires=requirements  # This is the key line to install dependencies
 )
