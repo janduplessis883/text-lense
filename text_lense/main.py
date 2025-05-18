@@ -1,6 +1,8 @@
 import pandas as pd
 from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
 import streamlit as st
+import plotly.express as px
+import altair as alt
 
 # Initialize sentiment analysis pipeline
 sentiment_task = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
@@ -47,9 +49,12 @@ def analyze_text(questions_data, total_reviews, progress_callback=None, status_c
         if status_callback:
             status_callback(f"Analyzing question: {question}")
 
-        for review in reviews:
+        for review_data in reviews:
+            review = review_data['review']
+            source = review_data['source'] # Extract source
+
             if status_callback:
-                status_callback(f"Analyzing review: {review[:50]}...") # Show first 50 chars of review
+                status_callback(f"Analyzing review from '{source}': {review[:50]}...") # Show first 50 chars of review and source
 
             # Perform sentiment analysis with truncation
             sentiment_result = sentiment_task(review, max_length=512, truncation=True)[0]
@@ -68,6 +73,7 @@ def analyze_text(questions_data, total_reviews, progress_callback=None, status_c
             result_entry = {
                 "question": question,
                 "review": review,
+                "source": source, # Include source in result_entry
                 "sentiment_label": sentiment_label,
                 "sentiment_score": sentiment_score,
                 "emotion_label": emotion_label,
@@ -95,6 +101,79 @@ def analyze_text(questions_data, total_reviews, progress_callback=None, status_c
 
     print(f"Content of all_results before DataFrame conversion: {all_results}")
     return pd.DataFrame(all_results)
+
+def visualize_results(results_df):
+    """
+    Visualizes the analysis results using Streamlit.
+
+    Args:
+        results_df (pandas.DataFrame): DataFrame containing the analysis results.
+    """
+    st.subheader("Analysis Results Visualization")
+
+    if results_df.empty:
+        st.info("No results to visualize.")
+        return
+
+    # Sentiment Distribution by Source (Donut Charts)
+    st.write("### Sentiment Distribution by Source")
+    if 'source' in results_df.columns:
+        for source in results_df['source'].unique():
+            st.write(f"#### Source: {source}")
+            source_df = results_df[results_df['source'] == source]
+            sentiment_counts = source_df['sentiment_label'].value_counts().reset_index()
+            sentiment_counts.columns = ['sentiment_label', 'count']
+
+            # Define custom colors
+            color_map = {'positive': '#7b94a6', 'negative': '#a25450', 'neutral': '#edeadc'}
+
+            fig = px.pie(sentiment_counts, values='count', names='sentiment_label',
+                         title=f'Sentiment Distribution for {source}',
+                         hole=0.5, # Creates the donut shape
+                         color='sentiment_label',
+                         color_discrete_map=color_map) # Apply custom colors
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Source information not available for sentiment visualization.")
+
+
+    # Emotion Distribution by Source (Bar Charts)
+    st.write("### Emotion Distribution by Source")
+    if 'source' in results_df.columns:
+        for source in results_df['source'].unique():
+            st.write(f"#### Source: {source}")
+            source_df = results_df[results_df['source'] == source]
+            emotion_counts = source_df['emotion_label'].value_counts().reset_index()
+            emotion_counts.columns = ['emotion_label', 'count']
+            chart = alt.Chart(emotion_counts).mark_bar(color='#ca8f56').encode(
+                x=alt.X('count:Q', title='Count'),
+                y=alt.Y('emotion_label:N', title='Emotion')
+            ).properties(
+                title=f'Emotion Distribution for {source}'
+            )
+            st.altair_chart(chart, use_container_width=True)
+    else:
+        st.info("Source information not available for emotion visualization.")
+
+
+    # Top Classification Label Distribution per Question (Bar Charts - unchanged)
+    st.write("### Top Classification Label Distribution per Question")
+    for question in results_df['question'].unique():
+        st.write(f"#### Question: {question}")
+        question_df = results_df[results_df['question'] == question]
+        if 'classification_top_label' in question_df.columns:
+            classification_counts = question_df['classification_top_label'].value_counts().reset_index()
+            classification_counts.columns = ['classification_top_label', 'count']
+            chart = alt.Chart(classification_counts).mark_bar(color='#1d2d3d').encode(
+                x=alt.X('count:Q', title='Count'),
+                y=alt.Y('classification_top_label:N', title='Classification Label')
+            ).properties(
+                title=f'Top Classification Label Distribution for {question}'
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No classification results for this question.")
+
 
 if __name__ == "__main__":
     # Example usage (for testing main.py independently)

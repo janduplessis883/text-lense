@@ -3,11 +3,11 @@ import pandas as pd
 import plotly.express as px # Keep import in case it's needed elsewhere, though not for display
 import io # Import io for handling file uploads
 import traceback # Import traceback for detailed error info
-
+import altair as alt
 # Import functions from main.py
-from main import analyze_text
+from main import analyze_text, visualize_results
 
-st.set_page_config(page_title="Text Analysis Module", layout="wide") # Use wide layout
+st.set_page_config(page_title="Text Analysis Module", layout="centered") # Use wide layout
 
 st.title(":material/reset_focus: TextLense")
 
@@ -83,7 +83,7 @@ if not st.session_state.raw_reviews_by_source:
     st.write("""Please use the sidebar to upload a **CSV file** or enter **free text reviews** to start the analysis.
              :material/csv: CSV files should contain one or more columns of text reviews. It can include headers or be a simple list of reviews. :material/more_horiz: You will be given the option to select which columns to analyze.""")
 
-    st.image('images/textlense_logo.png')
+    st.image('images/textlense_logo.png', width=600)
 else:
     # --- Classification Configuration Section (Only show if reviews are loaded) ---
     st.header("Classification Configuration")
@@ -143,18 +143,6 @@ else:
     progress_container = st.empty()
     status_container = st.empty() # Use a separate container for status
 
-    # --- Simple Test DataFrame Display (Moved inside the else block) ---
-    st.write("---")
-    st.write("### Test DataFrame Display (Visible when reviews are loaded)")
-    try:
-        test_df = pd.DataFrame({'col1': [1, 2], 'col2': ['A', 'B']})
-        st.dataframe(test_df)
-        st.write("If you see the DataFrame above, Streamlit's basic DataFrame display is working.")
-    except Exception as e:
-        st.error(f"Error displaying test DataFrame: {e}")
-        st.exception(e)
-    st.write("---")
-    # --- End Test DataFrame Display ---
 
 
     if analyze_button:
@@ -169,18 +157,20 @@ else:
 
             # Only include configurations that have a question, categories, and selected sources
             if question and categories and selected_sources:
-                reviews_for_this_question = []
+                reviews_with_source_for_this_question = []
                 for source in selected_sources:
                     if source in st.session_state.raw_reviews_by_source:
-                        reviews_for_this_question.extend(st.session_state.raw_reviews_by_source[source])
+                        for review in st.session_state.raw_reviews_by_source[source]:
+                            reviews_with_source_for_this_question.append({"review": review, "source": source})
 
-                if reviews_for_this_question:
+
+                if reviews_with_source_for_this_question:
                      questions_data_for_analysis.append({
                          "question": question,
-                         "reviews": reviews_for_this_question,
+                         "reviews": reviews_with_source_for_this_question,
                          "categories": categories
                      })
-                     total_reviews_for_progress += len(reviews_for_this_question)
+                     total_reviews_for_progress += len(reviews_with_source_for_this_question)
 
         if questions_data_for_analysis:
             # Create a progress bar
@@ -210,6 +200,7 @@ else:
                     )
 
                     # --- Specific Error Handling and Debugging for DataFrame Creation and Display ---
+                    results_df = pd.DataFrame()
                     try:
                         results_df = pd.DataFrame(analysis_results_list)
                         print("\n--- Debugging results_df ---")
@@ -219,28 +210,11 @@ else:
                         print(results_df.head()) # Print head of DataFrame to terminal
                         print("--- End Debugging results_df ---\n")
 
-                        st.subheader("Analysis Results")
-                        # Display results - Try setting width explicitly
-                        if not results_df.empty:
-                            st.dataframe(results_df, width=2000) # Set a large width
-                            # If the above doesn't work, try displaying a subset of columns
-                            # st.write("Attempting to display a subset of columns:")
-                            # subset_cols = ['question', 'review', 'sentiment_label', 'emotion_label', 'classification_top_label']
-                            # display_cols = [col for col in subset_cols if col in results_df.columns]
-                            # if display_cols:
-                            #     st.dataframe(results_df[display_cols])
-                            # else:
-                            #      st.write("Could not find key columns for subset display.")
-
-                        else:
-                            st.info("No results to display. Please check your input data and configurations.")
-
                     except Exception as df_error:
-                        st.error(f"Error creating or displaying DataFrame: {df_error}")
+                        st.error(f"Error creating DataFrame: {df_error}")
                         st.exception(df_error)
                         results_df = pd.DataFrame() # Ensure results_df is empty on error
                     # --- End Specific Error Handling and Debugging ---
-
 
                     # After analysis
                     status.update(label="Analysis complete!", state="complete", expanded=False)
@@ -253,7 +227,6 @@ else:
                 progress_container.empty()
                 status_container.empty()
 
-
             except Exception as e:
                 st.error(f"An error occurred during analysis: {e}")
                 st.exception(e) # Display the full exception traceback
@@ -261,6 +234,18 @@ else:
                 progress_container.empty()
                 status_container.empty()
 
+            # Display results outside the st.status block
+            st.subheader("Analysis Results")
+
+            # Visualize the results
+            if not results_df.empty:
+                visualize_results(results_df)
+
+                # Display results DataFrame below visualizations
+                st.write("### Raw Analysis Data")
+                st.dataframe(results_df, width=2000) # Set a large width
+            else:
+                st.info("No results to display. Please check your input data and configurations.")
 
         else:
             st.warning("Please configure at least one classification question with categories and select review sources, and ensure reviews are loaded.")
