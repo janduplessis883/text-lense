@@ -3,45 +3,36 @@ FROM python:3.12-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install required packages
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    software-properties-common \
-    gnupg \
     git \
+    curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Microsoft ODBC drivers
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl https://packages.microsoft.com/config/debian/12/prod.list | tee /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 msodbcsql17 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Optional: clone your repo (remove if not needed)
+# Clone your Streamlit app repo
 RUN git clone https://github.com/janduplessis883/text-lense.git
 
-# Create cache directories to avoid permission errors
-RUN mkdir -p /app/hf_cache /app/hf_home /app/.cache
+# Set working directory inside the cloned repo
+WORKDIR /app/text-lense
 
-# Set environment variables
+# Optional cache fix for Hugging Face models
+RUN mkdir -p /app/hf_cache /app/hf_home /app/.cache
 ENV TRANSFORMERS_CACHE=/app/hf_cache \
     HF_HOME=/app/hf_home \
     XDG_CACHE_HOME=/app/.cache
 
-# Copy your Streamlit app and .streamlit config
-COPY . ./
+# Copy secrets if needed (or mount as volume)
 COPY .streamlit/ .streamlit/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose Streamlit port
+# Expose Streamlit default port
 EXPOSE 8501
 
-# Healthcheck
+# Health check (optional)
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
-# Start Streamlit app
-ENTRYPOINT ["streamlit", "run", "index.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Run the Streamlit app
+ENTRYPOINT ["streamlit", "run", "src/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
