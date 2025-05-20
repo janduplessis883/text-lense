@@ -1,22 +1,44 @@
 import pandas as pd
 from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
-import altair as alt
+import streamlit as st # Keep import for @st.cache_resource
+import plotly.express as px # Keep import for visualize_results
+import altair as alt # Keep import for visualize_results
 
-# Initialize sentiment analysis pipeline
-sentiment_task = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
 
-# Initialize zero-shot classification pipeline
-model = AutoModelForSequenceClassification.from_pretrained("facebook/bart-large-mnli")
-tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-mnli")
-classifier = pipeline("zero-shot-classification", model=model, tokenizer=tokenizer)
+# Use st.cache_resource to cache the sentiment analysis pipeline
+@st.cache_resource
+def load_sentiment_pipeline():
+    """Loads and caches the sentiment analysis pipeline."""
+    return pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
 
-# Initialize emotion classification pipeline
-emotion_model_name = "SamLowe/roberta-base-go_emotions"
-emotion_tokenizer = AutoTokenizer.from_pretrained(emotion_model_name)
-emotion_model = AutoModelForSequenceClassification.from_pretrained(emotion_model_name)
-emotion_classifier = pipeline("text-classification", model=emotion_model, tokenizer=emotion_tokenizer, top_k=1)
+# Use st.cache_resource to cache the zero-shot classification model and tokenizer
+@st.cache_resource
+def load_zero_shot_model_tokenizer():
+    """Loads and caches the zero-shot classification model and tokenizer."""
+    model = AutoModelForSequenceClassification.from_pretrained("facebook/bart-large-mnli")
+    tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-mnli")
+    return model, tokenizer
 
-def analyze_text(questions_data, total_reviews, progress_callback=None, status_callback=None):
+# Use st.cache_resource to cache the emotion classification model and tokenizer
+@st.cache_resource
+def load_emotion_model_tokenizer():
+    """Loads and caches the emotion classification model and tokenizer."""
+    emotion_model_name = "SamLowe/roberta-base-go_emotions"
+    emotion_tokenizer = AutoTokenizer.from_pretrained(emotion_model_name)
+    emotion_model = AutoModelForSequenceClassification.from_pretrained(emotion_model_name)
+    # Return model, tokenizer, and tokenizer again as pipeline expects tokenizer argument
+    return emotion_model, emotion_tokenizer, emotion_tokenizer
+
+
+def analyze_text(
+    questions_data,
+    total_reviews,
+    sentiment_task, # Accept pipeline as argument
+    classifier, # Accept pipeline as argument
+    emotion_classifier, # Accept pipeline as argument
+    progress_callback=None,
+    status_callback=None
+):
     """
     Analyzes text reviews for sentiment, performs zero-shot classification, and detects emotions
     based on provided questions and categories.
@@ -26,6 +48,12 @@ def analyze_text(questions_data, total_reviews, progress_callback=None, status_c
             - 'question' (str): The classification question.
             - 'reviews' (list): A list of text strings (reviews) for this question.
             - 'categories' (list): A list of category strings for the question.
+        total_reviews (int): Total number of reviews for progress tracking.
+        sentiment_task: Initialized sentiment analysis pipeline.
+        classifier: Initialized zero-shot classification pipeline.
+        emotion_classifier: Initialized emotion classification pipeline.
+        progress_callback (function, optional): Callback for progress updates.
+        status_callback (function, optional): Callback for status updates.
 
     Returns:
         pandas.DataFrame: A DataFrame containing the original reviews,
@@ -55,15 +83,18 @@ def analyze_text(questions_data, total_reviews, progress_callback=None, status_c
                 status_callback(f"Analyzing review from '{source}': {review[:50]}...") # Show first 50 chars of review and source
 
             # Perform sentiment analysis with truncation
+            # Use the pipeline passed as an argument
             sentiment_result = sentiment_task(review, max_length=512, truncation=True)[0]
             sentiment_label = sentiment_result['label']
             sentiment_score = sentiment_result['score']
 
             # Perform emotion classification with truncation
+            # Use the pipeline passed as an argument
             emotion_result = emotion_classifier(review, max_length=512, truncation=True)[0]
             emotion_label = emotion_result[0]['label']
 
             # Perform zero-shot classification with truncation
+            # Use the pipeline passed as an argument
             classification_result = classifier(review, categories, multi_label=True, max_length=512, truncation=True)
             classification_labels = classification_result['labels']
             classification_scores = classification_result['scores']
@@ -107,13 +138,6 @@ def visualize_results(results_df):
     Args:
         results_df (pandas.DataFrame): DataFrame containing the analysis results.
     """
-    # This function is intended for Streamlit, but keeping it here for potential use
-    # in a notebook with Streamlit components or for clarity of the original structure.
-    # In a pure notebook, you would likely use other plotting libraries like matplotlib or seaborn.
-    import streamlit as st
-    import plotly.express as px
-    import altair as alt
-
     st.subheader("Analysis Results Visualization")
 
     if results_df.empty:

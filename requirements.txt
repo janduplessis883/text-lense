@@ -3,6 +3,4 @@ transformers==4.37.0
 streamlit
 plotly
 torch
-torchvision
-torchtext
-torchmetrics
+hf_xet

@@ -1,15 +1,34 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px # Keep import in case it's needed elsewhere, though not for display
+import plotly.express as px # Keep import in case it's needed elsewhere
 import io # Import io for handling file uploads
 import traceback # Import traceback for detailed error info
 import altair as alt
-# Import functions from main.py
-from main import analyze_text, visualize_results
+# Import functions from main.py - Assuming main.py is in the same directory
+# Import the loader functions and the analysis/visualization functions
+from main import (
+    analyze_text,
+    visualize_results,
+    load_sentiment_pipeline, # Import the loader function
+    load_zero_shot_model_tokenizer, # Import the loader function
+    load_emotion_model_tokenizer # Import the loader function
+)
 
+# This must be the first Streamlit command
 st.set_page_config(page_title="Text Analysis Module", layout="centered") # Use wide layout
 
 st.title(":material/reset_focus: TextLense")
+
+# --- Initialize Models and Pipelines (AFTER set_page_config) ---
+# Load the cached resources using the imported loader functions
+sentiment_task = load_sentiment_pipeline()
+zero_shot_model, zero_shot_tokenizer = load_zero_shot_model_tokenizer()
+emotion_model, emotion_tokenizer, emotion_pipeline_tokenizer = load_emotion_model_tokenizer()
+
+# Initialize pipelines using cached models/tokenizers
+from transformers import pipeline # Import pipeline here as it's used for initialization
+classifier = pipeline("zero-shot-classification", model=zero_shot_model, tokenizer=zero_shot_tokenizer)
+emotion_classifier = pipeline("text-classification", model=emotion_model, tokenizer=emotion_pipeline_tokenizer, top_k=1)
 
 # --- Sidebar for Input Method ---
 with st.sidebar:
@@ -83,7 +102,7 @@ if not st.session_state.raw_reviews_by_source:
     st.write("""Please use the sidebar to upload a **CSV file** or enter **free text reviews** to start the analysis.
              :material/csv: CSV files should contain one or more columns of text reviews. It can include headers or be a simple list of reviews. :material/more_horiz: You will be given the option to select which columns to analyze.""")
 
-    st.image('images/textlense_logo.png', width=600)
+    st.image('images/textlense_logo.png', width=600) # Make sure you have this image path correct
 else:
     # --- Classification Configuration Section (Only show if reviews are loaded) ---
     st.header("Classification Configuration")
@@ -100,20 +119,21 @@ else:
 
     # Display and edit existing configurations
     # Use enumerate with a copy to allow deletion while iterating
-    for i, config in enumerate(st.session_state.classification_configs):
+    # Use a copy to allow modification during iteration (deletion)
+    for i, config in enumerate(st.session_state.classification_configs.copy()):
         st.write(f"---")
         st.write(f"**Classification Question {i+1}**")
         # Use unique keys for each widget based on index
-        config['question'] = st.text_input("Question:", value=config.get('question', ''), key=f'q_{i}')
+        st.session_state.classification_configs[i]['question'] = st.text_input("Question:", value=config.get('question', ''), key=f'q_{i}')
 
         # Add category prefill checkbox
         prefill_categories = st.checkbox(f"Prefill common categories for Question {i+1}?", value=False, key=f'prefill_{i}')
         default_categories = ["Staff Professionalism", "Communication Effectiveness", "Appointment Availability", "Waiting Time", "Facility Cleanliness", "Patient Respect", "Treatment Quality", "Staff Empathy and Compassion", "Administrative Efficiency", "Reception Staff Interaction", "Environment and Ambiance", "Follow-up and Continuity of Care", "Accessibility and Convenience", "Patient Education and Information", "Feedback and Complaints Handling", "Test Results", "Surgery Website", "Telehealth", "Vaccinations", "Prescriptions and Medication Management", "Mental Health Support"]
-        # Use the current categories in state if prefill is not checked
+        # Use the current categories in state if prefill is not checked, otherwise use default
         categories_str = ", ".join(default_categories) if prefill_categories else ", ".join(config.get('categories', []))
 
         categories_input = st.text_area("Categories (comma-separated):", value=categories_str, key=f'cat_{i}')
-        config['categories'] = [cat.strip() for cat in categories_input.split(',') if cat.strip()]
+        st.session_state.classification_configs[i]['categories'] = [cat.strip() for cat in categories_input.split(',') if cat.strip()]
 
         # Allow mapping review sources to this classification question
         available_sources = list(st.session_state.raw_reviews_by_source.keys())
@@ -124,10 +144,10 @@ else:
                 default=config.get('review_sources', []),
                 key=f'sources_{i}'
             )
-            config['review_sources'] = selected_sources
+            st.session_state.classification_configs[i]['review_sources'] = selected_sources
         else:
              st.info("Upload a CSV or enter text reviews in the sidebar to select sources.")
-             config['review_sources'] = [] # Clear sources if none available
+             st.session_state.classification_configs[i]['review_sources'] = [] # Clear sources if none available
 
         # Button to remove this configuration
         # Use a unique key and a lambda function for the button's callback
@@ -191,10 +211,13 @@ else:
                     def update_status(message):
                         status.write(message) # Write message inside the status expander
 
-                    # Call analysis function with the prepared data
+                    # Call analysis function with the prepared data and initialized pipelines
                     analysis_results_list = analyze_text(
                         questions_data_for_analysis,
                         total_reviews_for_progress,
+                        sentiment_task, # Pass the initialized pipeline
+                        classifier, # Pass the initialized pipeline
+                        emotion_classifier, # Pass the initialized pipeline
                         progress_callback=update_progress,
                         status_callback=update_status
                     )
