@@ -2,6 +2,7 @@ import pandas as pd
 from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
 import streamlit as st # Keep import for @st.cache_resource
 import plotly.express as px # Keep import for visualize_results
+import plotly.graph_objects as go # Import for custom Plotly figures
 import altair as alt # Keep import for visualize_results
 
 
@@ -138,13 +139,14 @@ def visualize_results(results_df):
     Args:
         results_df (pandas.DataFrame): DataFrame containing the analysis results.
     """
-    st.subheader("Analysis Results Visualization")
+
 
     if results_df.empty:
         st.info("No results to visualize.")
         return
 
     # Sentiment Distribution by Source (Donut Charts)
+    st.divider()
     st.write("### Sentiment Distribution by Source")
     if 'source' in results_df.columns:
         for source in results_df['source'].unique():
@@ -167,6 +169,7 @@ def visualize_results(results_df):
 
 
     # Emotion Distribution by Source (Bar Charts)
+    st.divider()
     st.write("### Emotion Distribution by Source")
     if 'source' in results_df.columns:
         for source in results_df['source'].unique():
@@ -186,6 +189,7 @@ def visualize_results(results_df):
 
 
     # Top Classification Label Distribution per Question (Bar Charts - unchanged)
+    st.divider()
     st.write("### Top Classification Label Distribution per Question")
     for question in results_df['question'].unique():
         st.write(f"#### Question: {question}")
@@ -202,3 +206,65 @@ def visualize_results(results_df):
             st.altair_chart(chart, use_container_width=True)
         else:
             st.info("No classification results for this question.")
+
+    # Sentiment Distribution by Classification Label (Stacked Bar Chart)
+    st.divider()
+    st.write("### Sentiment Distribution by Classification Label")
+    if 'classification_top_label' in results_df.columns and 'sentiment_label' in results_df.columns:
+        for question in results_df['question'].unique():
+            st.write(f"#### Question: {question}")
+            question_df = results_df[results_df['question'] == question]
+
+            # Define custom palette and hue order
+            palette = {
+                "positive": "#2e5f77",
+                "negative": "#d7662a",
+                "neutral": "#d7d8d7",
+            }
+            hue_order = ["negative", "neutral", "positive"]
+
+            # Create a cross-tabulation of classification labels and sentiment categories
+            crosstab = pd.crosstab(
+                question_df["classification_top_label"], question_df["sentiment_label"]
+            )
+            # Reindex columns to ensure consistent order for stacking
+            crosstab = crosstab.reindex(columns=hue_order, fill_value=0)
+
+            # Sort the classification labels by total counts in descending order
+            crosstab_sorted = crosstab.sum(axis=1).sort_values(ascending=False).index
+            crosstab = crosstab.loc[crosstab_sorted]
+
+            # Create a horizontal stacked bar chart using Plotly
+            fig = go.Figure(
+                data=[
+                    go.Bar(
+                        y=crosstab.index,
+                        x=crosstab[sentiment],
+                        name=sentiment,
+                        orientation="h",
+                        marker=dict(color=palette[sentiment]),
+                    )
+                    for sentiment in hue_order
+                ],
+                layout=go.Layout(
+                    title=f"Sentiment Distribution for {question}",
+                    xaxis=dict(
+                        title="Counts",
+                        gridcolor="#888888",
+                        gridwidth=0.5,
+                        showgrid=True,
+                    ),
+                    yaxis=dict(title="Classification Labels", showgrid=False),
+                    barmode="stack",
+                    plot_bgcolor="white",
+                    showlegend=True,
+                    legend=dict(x=1.0, y=1.0),
+                    width=750,
+                    height=550,
+                ),
+            )
+
+            # Streamlit function to display Plotly figures
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Classification labels or sentiment labels not available for this visualization.")

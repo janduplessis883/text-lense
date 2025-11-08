@@ -50,6 +50,10 @@ with st.sidebar:
                 stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
                 df = pd.read_csv(stringio, header=0 if has_header else None)
 
+                # Replace empty strings with NaN and then drop rows that have NaN in any column
+                # This ensures that rows with empty feedback text are removed from the DataFrame
+                df = df.replace('', pd.NA).dropna(how='any')
+
                 st.session_state.raw_reviews_by_source = {} # Clear previous data
 
                 if has_header:
@@ -57,6 +61,16 @@ with st.sidebar:
                     for col_name in df.columns:
                         # Ensure column name is a string and handle potential non-string data in column
                         reviews_list = df[col_name].dropna().astype(str).tolist()
+
+                        reviews_list = [r for r in reviews_list if r.strip()]
+                        # Filter out reviews with less than 6 words
+                        filtered_reviews_list = []
+                        for r in reviews_list:
+                            testlist = [word for word in r.strip().split(' ') if word]
+                            if len(testlist) > 5:
+                                filtered_reviews_list.append(' '.join(testlist))
+                        reviews_list = filtered_reviews_list
+                        st.code(reviews_list)
                         if reviews_list: # Only add if there are reviews
                              st.session_state.raw_reviews_by_source[str(col_name)] = reviews_list
 
@@ -67,6 +81,15 @@ with st.sidebar:
                         for i in range(df.shape[1]):
                             # Ensure data is string and handle potential non-string data
                             reviews_list = df[i].dropna().astype(str).tolist()
+                            reviews_list = [r for r in reviews_list if r.strip()]
+                            # Filter out reviews with less than 6 words
+                            filtered_reviews_list = []
+                            for r in reviews_list:
+                                testlist = [word for word in r.strip().split(' ') if word]
+                                if len(testlist) > 5:
+                                    filtered_reviews_list.append(' '.join(testlist))
+                            reviews_list = filtered_reviews_list
+                            st.code(reviews_list)
                             if reviews_list: # Only add if there are reviews
                                 st.session_state.raw_reviews_by_source[f"Column {i+1}"] = reviews_list
                     else:
@@ -89,6 +112,13 @@ with st.sidebar:
         st.session_state.raw_reviews_by_source = {} # Clear previous data
         if reviews_input:
             reviews_list = [review.strip() for review in reviews_input.split('\n') if review.strip()]
+            # Filter out reviews with less than 6 words
+            filtered_reviews_list = []
+            for r in reviews_list:
+                testlist = [word for word in r.strip().split(' ') if word]
+                if len(testlist) > 5:
+                    filtered_reviews_list.append(' '.join(testlist))
+            reviews_list = filtered_reviews_list
             if reviews_list:
                  st.session_state.raw_reviews_by_source["Entered Text Reviews"] = reviews_list
         else:
@@ -126,13 +156,36 @@ else:
         # Use unique keys for each widget based on index
         st.session_state.classification_configs[i]['question'] = st.text_input("Question:", value=config.get('question', ''), key=f'q_{i}')
 
-        # Add category prefill checkbox
-        prefill_categories = st.checkbox(f"Prefill common categories for Question {i+1}?", value=False, key=f'prefill_{i}')
-        default_categories = ["Staff Professionalism", "Communication Effectiveness", "Appointment Availability", "Waiting Time", "Facility Cleanliness", "Patient Respect", "Treatment Quality", "Staff Empathy and Compassion", "Administrative Efficiency", "Reception Staff Interaction", "Environment and Ambiance", "Follow-up and Continuity of Care", "Accessibility and Convenience", "Patient Education and Information", "Feedback and Complaints Handling", "Test Results", "Surgery Website", "Telehealth", "Vaccinations", "Prescriptions and Medication Management", "Mental Health Support"]
-        # Use the current categories in state if prefill is not checked, otherwise use default
-        categories_str = ", ".join(default_categories) if prefill_categories else ", ".join(config.get('categories', []))
+        default_categories = ["Staff Professionalism", "Communication Effectiveness", "Appointment Availability", "Waiting Time", "Facility Cleanliness", "Patient Respect", "Treatment Quality", "Staff Empathy and Compassion", "Administrative Efficiency", "Reception Staff Interaction", "Environment and Ambiance", "Follow-up and Continuity of Care", "Accessibility and Convenience", "Patient Education and Information", "Feedback and Complaints Handling", "Test Results", "Surgery Website", "Telehealth", "Vaccinations", "Prescriptions and Medication Management", "Mental Health Support", "Unclassifiable"]
 
-        categories_input = st.text_area("Categories (comma-separated):", value=categories_str, key=f'cat_{i}')
+        # Define a callback function for the checkbox
+        def update_categories_on_prefill_toggle(index):
+            if st.session_state[f'prefill_{index}']: # If checkbox is now checked
+                st.session_state.classification_configs[index]['categories'] = default_categories
+            else: # If checkbox is now unchecked, clear the categories
+                st.session_state.classification_configs[index]['categories'] = []
+
+        # Initialize categories in session state if not already set or empty
+        if not st.session_state.classification_configs[i].get('categories'):
+            st.session_state.classification_configs[i]['categories'] = default_categories
+
+        prefill_categories = st.checkbox(
+            f"Prefill common categories for Question {i+1}?",
+            value=True if st.session_state.classification_configs[i]['categories'] == default_categories else False, # Set initial value of checkbox based on whether default categories are present
+            key=f'prefill_{i}',
+            on_change=update_categories_on_prefill_toggle,
+            args=(i,) # Pass the index to the callback
+        )
+
+        # The text area's value should always reflect the current state of categories in session_state
+        categories_str = ", ".join(st.session_state.classification_configs[i]['categories'])
+
+        categories_input = st.text_area(
+            "Categories (comma-separated):",
+            value=categories_str,
+            key=f'cat_{i}'
+        )
+        # Update session state from text area input
         st.session_state.classification_configs[i]['categories'] = [cat.strip() for cat in categories_input.split(',') if cat.strip()]
 
         # Allow mapping review sources to this classification question
@@ -157,7 +210,7 @@ else:
             st.rerun() # Rerun the script to update the list display
 
 
-    analyze_button = st.button("Analyze Reviews")
+    analyze_button = st.button("Analyze Reviews", type='primary')
 
     # Placeholder for progress bar and status messages
     progress_container = st.empty()
@@ -205,7 +258,7 @@ else:
             results_df = pd.DataFrame() # Initialize results_df outside the try block
 
             try:
-                with st.status("Analyzing reviews: Sentiment, Emotion & Zero-shot classification...", expanded=True) as status:
+                with st.status("Analyzing reviews: Sentiment Analysis, Emotion Detection & Zero-shot classification...", expanded=True) as status:
 
                     # Define a callback function to update the status message
                     def update_status(message):
