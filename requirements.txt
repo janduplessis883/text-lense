@@ -4,3 +4,6 @@ streamlit
 plotly
 torch
 hf_xet
+sentence-transformers
+numpy
+altair

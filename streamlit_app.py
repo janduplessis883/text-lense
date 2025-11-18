@@ -11,19 +11,50 @@ from main import (
     visualize_results,
     load_sentiment_pipeline, # Import the loader function
     load_zero_shot_model_tokenizer, # Import the loader function
-    load_emotion_model_tokenizer # Import the loader function
+    load_emotion_model_tokenizer, # Import the loader function
+    load_segmentation_models # Import the segmentation loader function
 )
 
 # This must be the first Streamlit command
 st.set_page_config(page_title="Text Analysis Module", layout="centered") # Use wide layout
 
 st.title(":material/reset_focus: TextLense")
+st.sidebar.header("Configuration")
+zero_shot_model = st.sidebar.selectbox("Select a zero-shot classification model:", options=['MoritzLaurer/deberta-v3-large-zeroshot-v2.0', 'facebook/bart-large-mnli'], index=1)
+default_selector = st.sidebar.selectbox("Select default Categories Set:", options=['Classic Set', 'Primary Thematic Set', 'Primary Thematic Set Modified v6', 'Blank'], index=1)
+
+# Add segmentation toggle in sidebar
+st.sidebar.divider()
+st.sidebar.subheader("Advanced Options")
+use_segmentation = st.sidebar.toggle(
+    "Enable Review Segmentation",
+    value=False,
+    help="Segment long reviews into smaller parts for more accurate aspect-based analysis. Uses SentenceTransformer for initial segmentation, and LLM if more than 6 segments are detected."
+)
+llm_model = st.sidebar.text_input(
+    "LLM Model for Segmentation",
+    value="gpt-oss:20b",
+    help="Ollama model name for LLM-based segmentation (used when >6 segments detected)",
+    disabled=not use_segmentation
+)
 
 # --- Initialize Models and Pipelines (AFTER set_page_config) ---
 # Load the cached resources using the imported loader functions
 sentiment_task = load_sentiment_pipeline()
-zero_shot_model, zero_shot_tokenizer = load_zero_shot_model_tokenizer()
+zero_shot_model, zero_shot_tokenizer = load_zero_shot_model_tokenizer(zero_shot_model)
 emotion_model, emotion_tokenizer, emotion_pipeline_tokenizer = load_emotion_model_tokenizer()
+
+# Load segmentation models if enabled
+embedder = None
+nlp = None
+if use_segmentation:
+    with st.spinner("Loading segmentation models..."):
+        embedder, nlp = load_segmentation_models()
+        if embedder is not None:
+            st.sidebar.success("✓ Segmentation models loaded")
+        else:
+            st.sidebar.error("✗ Failed to load segmentation models")
+            use_segmentation = False  # Disable if models failed to load
 
 # Initialize pipelines using cached models/tokenizers
 from transformers import pipeline # Import pipeline here as it's used for initialization
@@ -40,39 +71,86 @@ with st.sidebar:
     if 'raw_reviews_by_source' not in st.session_state:
         st.session_state.raw_reviews_by_source = {}
 
+    # Store human labels in session state
+    if 'human_labels' not in st.session_state:
+        st.session_state.human_labels = {}
+
     if input_method == "Upload CSV":
         uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
         if uploaded_file is not None:
             has_header = st.checkbox("CSV has header row", value=True)
+
+            # Checkbox to indicate if CSV contains human-labelled data
+            has_human_labels = st.checkbox(
+                "CSV includes 'human_labelled' column",
+                value=False,
+                help="Check this if your CSV contains a 'human_labelled' column for comparison with AI classifications"
+            )
 
             try:
                 # Use io.StringIO to read the uploaded file
                 stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
                 df = pd.read_csv(stringio, header=0 if has_header else None)
 
-                # Replace empty strings with NaN and then drop rows that have NaN in any column
-                # This ensures that rows with empty feedback text are removed from the DataFrame
-                df = df.replace('', pd.NA).dropna(how='any')
+                temp_human_labels = [] # Initialize here, will be populated after filtering
+
+                # Replace empty strings with NaN for consistent handling, but do not drop rows based on 'any' NA.
+                # We will filter based on review content length instead.
+                df = df.replace('', pd.NA)
+
+                # Initialize a Series to track which rows to keep.
+                # A row is kept if AT LEAST ONE review column has > 5 words.
+                rows_to_keep_by_review_content = pd.Series([False] * len(df), index=df.index)
+                review_columns_to_check = []
+
+                if has_header:
+                    for col_name in df.columns:
+                        if col_name == 'human_labelled':
+                            continue
+                        review_columns_to_check.append(col_name)
+                else:
+                    # If no header, assume all columns are potential review columns for filtering purposes.
+                    # This is a simplification; a more robust solution might ask the user to specify review columns.
+                    review_columns_to_check = df.columns.tolist()
+
+                if not review_columns_to_check:
+                    st.warning("No review columns identified for filtering by word count. All rows will be kept.")
+                    rows_to_keep_by_review_content = pd.Series([True] * len(df), index=df.index)
+                else:
+                    for col in review_columns_to_check:
+                        # Count words in each review. Treat NaN/empty strings as 0 words.
+                        # The .fillna('') ensures .astype(str) doesn't convert NaN to 'nan' string.
+                        word_counts = df[col].fillna('').astype(str).apply(lambda x: len([w for w in x.strip().split(' ') if w]))
+                        # A row is kept if it meets the word count for THIS column OR it already met it for another column
+                        rows_to_keep_by_review_content = rows_to_keep_by_review_content | (word_counts > 5)
+
+                df = df[rows_to_keep_by_review_content]
+                st.info(f"ℹ️ After filtering short reviews: {len(df)} rows remain")
+
+                # Now, extract human labels from the *filtered* dataframe if the column exists
+                if has_human_labels and has_header and 'human_labelled' in df.columns:
+                    temp_human_labels = df['human_labelled'].astype(str).tolist()
+                    st.success(f"✓ Found 'human_labelled' column with {len(temp_human_labels)} labels (after filtering)")
 
                 st.session_state.raw_reviews_by_source = {} # Clear previous data
+                st.session_state.human_labels = {} # Clear previous human labels
+
+                # Collect all reviews from the filtered dataframe
+                temp_reviews_by_source = {}
 
                 if has_header:
                     # Use column names as potential sources
                     for col_name in df.columns:
-                        # Ensure column name is a string and handle potential non-string data in column
-                        reviews_list = df[col_name].dropna().astype(str).tolist()
+                        # Skip the human_labelled column when processing reviews
+                        if col_name == 'human_labelled':
+                            continue
 
-                        reviews_list = [r for r in reviews_list if r.strip()]
-                        # Filter out reviews with less than 6 words
-                        filtered_reviews_list = []
-                        for r in reviews_list:
-                            testlist = [word for word in r.strip().split(' ') if word]
-                            if len(testlist) > 5:
-                                filtered_reviews_list.append(' '.join(testlist))
-                        reviews_list = filtered_reviews_list
-                        st.code(reviews_list)
+                        # Extract reviews directly from the already-filtered dataframe
+                        reviews_list = df[col_name].astype(str).tolist()
+                        reviews_list = [r.strip() for r in reviews_list if r.strip()]
+
                         if reviews_list: # Only add if there are reviews
-                             st.session_state.raw_reviews_by_source[str(col_name)] = reviews_list
+                             temp_reviews_by_source[str(col_name)] = reviews_list
 
                 else:
                     # No header, use column indices as sources
@@ -82,19 +160,50 @@ with st.sidebar:
                             # Ensure data is string and handle potential non-string data
                             reviews_list = df[i].dropna().astype(str).tolist()
                             reviews_list = [r for r in reviews_list if r.strip()]
-                            # Filter out reviews with less than 6 words
-                            filtered_reviews_list = []
-                            for r in reviews_list:
-                                testlist = [word for word in r.strip().split(' ') if word]
-                                if len(testlist) > 5:
-                                    filtered_reviews_list.append(' '.join(testlist))
-                            reviews_list = filtered_reviews_list
-                            st.code(reviews_list)
                             if reviews_list: # Only add if there are reviews
-                                st.session_state.raw_reviews_by_source[f"Column {i+1}"] = reviews_list
+                                temp_reviews_by_source[f"Column {i+1}"] = reviews_list
                     else:
                         st.warning("CSV is empty or could not be read.")
                         st.session_state.raw_reviews_by_source = {} # Ensure empty if CSV is empty
+
+                # Apply slicing if we have reviews
+                if temp_reviews_by_source:
+                    # Get the maximum length of reviews across all sources
+                    max_length = max(len(reviews) for reviews in temp_reviews_by_source.values())
+
+                    st.write("---")
+                    st.write("### Slice Reviews")
+                    st.write(f"Total **reviews available**: {max_length}")
+
+                    # Number inputs for slicing
+                    start_index = st.number_input(
+                        "Start Index:",
+                        min_value=0,
+                        max_value=max(0, max_length - 1),
+                        value=0,
+                        help="Starting index for slicing reviews (inclusive)"
+                    )
+                    end_index = st.number_input(
+                        "End Index:",
+                        min_value=start_index + 1,
+                        max_value=max_length,
+                        value=max_length,
+                        help="Ending index for slicing reviews (exclusive)"
+                    )
+
+                    # Apply slicing to all review sources
+                    for source, reviews in temp_reviews_by_source.items():
+                        sliced_reviews = reviews[start_index:end_index]
+                        if sliced_reviews:
+                            st.session_state.raw_reviews_by_source[source] = sliced_reviews
+
+                    # Apply slicing to human labels if they exist
+                    if temp_human_labels:
+                        sliced_labels = temp_human_labels[start_index:end_index]
+                        st.session_state.human_labels['sliced'] = sliced_labels
+                        st.info(f"Using reviews from index {start_index} to {end_index} ({end_index - start_index} reviews per source) with {len(sliced_labels)} human labels")
+                    else:
+                        st.info(f"Using reviews from index {start_index} to {end_index} ({end_index - start_index} reviews per source)")
 
 
             except Exception as e:
@@ -135,8 +244,8 @@ if not st.session_state.raw_reviews_by_source:
     st.image('images/textlense_logo.png', width=600) # Make sure you have this image path correct
 else:
     # --- Classification Configuration Section (Only show if reviews are loaded) ---
-    st.header("Classification Configuration")
-    st.write("Define the questions and categories for zero-shot classification and select which reviews apply to each question.")
+    st.subheader("Classification Configuration")
+    st.caption("Define the questions and categories for zero-shot classification and select which reviews apply to each question.")
 
     # Use session state to manage classification configurations dynamically
     if 'classification_configs' not in st.session_state:
@@ -156,37 +265,58 @@ else:
         # Use unique keys for each widget based on index
         st.session_state.classification_configs[i]['question'] = st.text_input("Question:", value=config.get('question', ''), key=f'q_{i}')
 
-        default_categories = ["Staff Professionalism", "Communication Effectiveness", "Appointment Availability", "Waiting Time", "Facility Cleanliness", "Patient Respect", "Treatment Quality", "Staff Empathy and Compassion", "Administrative Efficiency", "Reception Staff Interaction", "Environment and Ambiance", "Follow-up and Continuity of Care", "Accessibility and Convenience", "Patient Education and Information", "Feedback and Complaints Handling", "Test Results", "Surgery Website", "Telehealth", "Vaccinations", "Prescriptions and Medication Management", "Mental Health Support", "Unclassifiable"]
+        default_categories1 = ["Staff Professionalism", "Communication Effectiveness", "Appointment Availability", "Waiting Time", "Facility Cleanliness", "Patient Respect", "Treatment Quality", "Staff Empathy and Compassion", "Administrative Efficiency", "Reception Staff Interaction", "Environment and Ambiance", "Follow-up and Continuity of Care", "Accessibility and Convenience", "Patient Education and Information", "Feedback and Complaints Handling", "Test Results", "Surgery Website", "Telehealth", "Vaccinations", "Prescriptions and Medication Management", "Mental Health Support", "Unclassifiable"]
+        default_categories2 = ['Access & Availability', 'Provision of Information', 'Privacy & Confidentiality', 'Continuity of Care', 'Clinical Staff Interpersonal Skills', 'Administrative Staff Interpersonal Skills', 'Service Delivery Process', 'Clinical Quality & Safety', 'Unclassifiable']
+        default_categories3 = ["Appointment Availability & Access",
+                                "Online Services",
+                                "Admin Processes",
+                                "Facilities & Cleanliness",
+                                "Prescription & Medication Management",
+                                "Clinical Treatment Quality",
+                                "Test Results & Follow-up",
+                                "Health Promotion",
+                                "Nursing & HCA Services",
+                                "Reception Staff Interaction",
+                                "Clinical Staff Professionalism & Attitude",
+                                "Continuity of Care",
+                                "Privacy & Confidentiality",
+                                "Feedback & Complaints Process",
+                                "Overall Experience"
+                                ]
+        # Initialize categories_input
+        categories_input = ""
 
-        # Define a callback function for the checkbox
-        def update_categories_on_prefill_toggle(index):
-            if st.session_state[f'prefill_{index}']: # If checkbox is now checked
-                st.session_state.classification_configs[index]['categories'] = default_categories
-            else: # If checkbox is now unchecked, clear the categories
-                st.session_state.classification_configs[index]['categories'] = []
+        if default_selector == 'Classic Set':
+            categories_input = st.text_area(
+                    "Categories (comma-separated):",
+                    value="Staff Professionalism,Communication Effectiveness,Appointment Availability,Waiting Time,Facility Cleanliness,Patient Respect,Treatment Quality,Staff Empathy and Compassion,Administrative Efficiency,Reception Staff Interaction,Environment and Ambiance,Follow-up and Continuity of Care,Accessibility and Convenience,Patient Education and Information,Feedback and Complaints Handling,Test Results,Surgery Website,Telehealth,Vaccinations,Prescriptions and Medication Management,Mental Health Support,Unclassifiable",
+                    key=f'cat_{i}'
+            )
+        elif default_selector == 'Primary Thematic Set':
+            categories_input = st.text_area(
+                    "Categories (comma-separated):",
+                    value="Access & Availability,Provision of Information,Privacy & Confidentiality,Continuity of Care,Clinical Staff Interpersonal Skills,Administrative Staff Interpersonal Skills,Service Delivery Process,Clinical Quality & Safety,Unclassifiable",
+                    key=f'cat_{i}'
+            )
+        elif default_selector == 'Primary Thematic Set Modified v6':
+            categories_input = st.text_area(
+                    "Categories (comma-separated):",
+                    value="Appointment Availability & Access,Online Services,Admin Processes,Facilities & Cleanliness,Prescription & Medication Management,Clinical Treatment Quality,Test Results & Follow-up,Health Promotion,Nursing & HCA Services,Reception Staff Interaction,Clinical Staff Professionalism & Attitude,Continuity of Care,Privacy & Confidentiality,Feedback & Complaints Process,Overall Experience",
+                    key=f'cat_{i}'
+            )
+        elif default_selector == 'Blank':
+            categories_input = st.text_area(
+                    "Categories (comma-separated):",
+                    value="",
+                    key=f'cat_{i}'
+            )
 
-        # Initialize categories in session state if not already set or empty
-        if not st.session_state.classification_configs[i].get('categories'):
-            st.session_state.classification_configs[i]['categories'] = default_categories
+        # Process and store categories
+        if categories_input.strip():
+            st.session_state.classification_configs[i]['categories'] = [cat.strip() for cat in categories_input.split(',') if cat.strip()]
+        else:
+            st.session_state.classification_configs[i]['categories'] = []
 
-        prefill_categories = st.checkbox(
-            f"Prefill common categories for Question {i+1}?",
-            value=True if st.session_state.classification_configs[i]['categories'] == default_categories else False, # Set initial value of checkbox based on whether default categories are present
-            key=f'prefill_{i}',
-            on_change=update_categories_on_prefill_toggle,
-            args=(i,) # Pass the index to the callback
-        )
-
-        # The text area's value should always reflect the current state of categories in session_state
-        categories_str = ", ".join(st.session_state.classification_configs[i]['categories'])
-
-        categories_input = st.text_area(
-            "Categories (comma-separated):",
-            value=categories_str,
-            key=f'cat_{i}'
-        )
-        # Update session state from text area input
-        st.session_state.classification_configs[i]['categories'] = [cat.strip() for cat in categories_input.split(',') if cat.strip()]
 
         # Allow mapping review sources to this classification question
         available_sources = list(st.session_state.raw_reviews_by_source.keys())
@@ -216,7 +346,9 @@ else:
     progress_container = st.empty()
     status_container = st.empty() # Use a separate container for status
 
-
+    # Initialize results_df in session state to persist across reruns
+    if 'results_df' not in st.session_state:
+        st.session_state.results_df = pd.DataFrame()
 
     if analyze_button:
         questions_data_for_analysis = []
@@ -255,7 +387,7 @@ else:
 
             # Use st.status to display analysis status
             # status_container is used here
-            results_df = pd.DataFrame() # Initialize results_df outside the try block
+            # results_df = pd.DataFrame() # No longer needed as it's in session state
 
             try:
                 with st.status("Analyzing reviews: Sentiment Analysis, Emotion Detection & Zero-shot classification...", expanded=True) as status:
@@ -272,24 +404,49 @@ else:
                         classifier, # Pass the initialized pipeline
                         emotion_classifier, # Pass the initialized pipeline
                         progress_callback=update_progress,
-                        status_callback=update_status
+                        status_callback=update_status,
+                        use_segmentation=use_segmentation,
+                        embedder=embedder,
+                        llm_model=llm_model
                     )
 
                     # --- Specific Error Handling and Debugging for DataFrame Creation and Display ---
-                    results_df = pd.DataFrame()
+                    # results_df = pd.DataFrame() # No longer needed as it's in session state
                     try:
-                        results_df = pd.DataFrame(analysis_results_list)
+                        st.session_state.results_df = pd.DataFrame(analysis_results_list)
+
+                        # Debug: Check session state
+                        print("\n--- Debugging Human Labels ---")
+                        print(f"Session state human_labels keys: {st.session_state.human_labels.keys()}")
+                        if 'sliced' in st.session_state.human_labels:
+                            print(f"Sliced labels length: {len(st.session_state.human_labels['sliced'])}")
+                            print(f"First few labels: {st.session_state.human_labels['sliced'][:5]}")
+                        print(f"Results DataFrame length: {len(st.session_state.results_df)}")
+                        print("--- End Debugging Human Labels ---\n")
+
+                        # Merge human labels if they exist
+                        if 'sliced' in st.session_state.human_labels and st.session_state.human_labels['sliced']:
+                            human_labels = st.session_state.human_labels['sliced']
+                            # Ensure the lengths match
+                            if len(human_labels) == len(st.session_state.results_df):
+                                st.session_state.results_df['HUMAN LABELS'] = human_labels
+                                status.write(f"✓ Added 'HUMAN LABELS' column with {len(human_labels)} human labels for comparison")
+                            else:
+                                status.write(f"⚠️ Human labels count ({len(human_labels)}) doesn't match results count ({len(st.session_state.results_df)}). Skipping merge.")
+                        else:
+                            status.write("ℹ️ No human labels found in session state")
+
                         print("\n--- Debugging results_df ---")
-                        print(f"DataFrame created successfully. Shape: {results_df.shape}") # Print shape
-                        print(f"Columns: {results_df.columns.tolist()}") # Print columns
+                        print(f"DataFrame created successfully. Shape: {st.session_state.results_df.shape}") # Print shape
+                        print(f"Columns: {st.session_state.results_df.columns.tolist()}") # Print columns
                         print("Head of DataFrame:")
-                        print(results_df.head()) # Print head of DataFrame to terminal
-                        print("--- End Debugging results_df ---\n")
+                        print(st.session_state.results_df.head()) # Print head of DataFrame to terminal
+                        print("--- End Debugging results_df ---")
 
                     except Exception as df_error:
                         st.error(f"Error creating DataFrame: {df_error}")
                         st.exception(df_error)
-                        results_df = pd.DataFrame() # Ensure results_df is empty on error
+                        st.session_state.results_df = pd.DataFrame() # Ensure results_df is empty on error
                     # --- End Specific Error Handling and Debugging ---
 
                     # After analysis
@@ -310,18 +467,103 @@ else:
                 progress_container.empty()
                 status_container.empty()
 
-            # Display results outside the st.status block
-            st.subheader("Analysis Results")
+        # Display results outside the st.status block
+        st.subheader("Analysis Results")
 
-            # Visualize the results
-            if not results_df.empty:
-                visualize_results(results_df)
+        # Visualize the results
+        if not st.session_state.results_df.empty:
+            visualize_results(st.session_state.results_df)
 
-                # Display results DataFrame below visualizations
-                st.write("### Raw Analysis Data")
-                st.dataframe(results_df, width=2000) # Set a large width
+            # --- Calculate and Display Accuracy Metrics (New Section) ---
+            if 'HUMAN LABELS' in st.session_state.results_df.columns:
+                st.write("### Accuracy Metrics (Human vs. AI Labels)")
+                accuracy_data = []
+
+                # Get unique categories from the AI classification
+                unique_ai_categories = st.session_state.results_df['classification_top_label'].unique()
+
+                for category in unique_ai_categories:
+                    # Filter for rows where AI classified as this category
+                    category_df = st.session_state.results_df[st.session_state.results_df['classification_top_label'] == category]
+
+                    if not category_df.empty:
+                        # Count how many of these AI classifications match the human label
+                        correct_predictions = (category_df['HUMAN LABELS'] == category_df['classification_top_label']).sum()
+                        total_predictions = len(category_df)
+
+                        accuracy = (correct_predictions / total_predictions) * 100 if total_predictions > 0 else 0
+                        accuracy_data.append({'Category': category, 'Accuracy (%)': f"{accuracy:.2f}%", 'Total AI Predictions': total_predictions, 'Correct AI Predictions': correct_predictions})
+
+                if accuracy_data:
+                    accuracy_df = pd.DataFrame(accuracy_data)
+                    st.dataframe(accuracy_df)
+                else:
+                    st.info("No accuracy metrics to display. Ensure human labels are present and categories are classified.")
+            # --- End Accuracy Metrics Section ---
+
+            # --- Sentiment Heatmap Section (New) ---
+            st.write("### Sentiment Analysis Heatmap by Category")
+            if not st.session_state.results_df.empty and 'classification_top_label' in st.session_state.results_df.columns and all(col in st.session_state.results_df.columns for col in ['sentiment_positive', 'sentiment_neutral', 'sentiment_negative']):
+                # Group by classification_top_label and calculate mean sentiment scores
+                sentiment_by_category = st.session_state.results_df.groupby('classification_top_label')[
+                    ['sentiment_positive', 'sentiment_neutral', 'sentiment_negative']
+                ].mean().reset_index()
+
+                # Rename columns for better display in heatmap
+                sentiment_by_category.rename(columns={
+                    'classification_top_label': 'Category',
+                    'sentiment_positive': 'Mean Positive Sentiment',
+                    'sentiment_neutral': 'Mean Neutral Sentiment',
+                    'sentiment_negative': 'Mean Negative Sentiment'
+                }, inplace=True)
+
+                if not sentiment_by_category.empty:
+                    # Melt the DataFrame for Plotly Express heatmap
+                    melted_sentiment = sentiment_by_category.melt(
+                        id_vars='Category',
+                        var_name='Sentiment Type',
+                        value_name='Mean Score'
+                    )
+
+                    # Pivot the melted DataFrame to get a matrix for imshow
+                    heatmap_data = melted_sentiment.pivot(index='Category', columns='Sentiment Type', values='Mean Score')
+
+                    # Ensure the order of sentiment types for consistent display
+                    sentiment_order = ['Mean Positive Sentiment', 'Mean Neutral Sentiment', 'Mean Negative Sentiment']
+                    heatmap_data = heatmap_data[sentiment_order]
+
+                    # Create the heatmap using Plotly Express imshow
+                    fig = px.imshow(
+                        heatmap_data,
+                        labels=dict(x="Sentiment Type", y="Category", color="Mean Score"),
+                        x=heatmap_data.columns.tolist(),
+                        y=heatmap_data.index.tolist(),
+                        color_continuous_scale=px.colors.sequential.Viridis,
+                        title='Mean Sentiment Score by Category',
+                        text_auto=True # Display values on heatmap
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No categories found for sentiment heatmap.")
             else:
-                st.info("No results to display. Please check your input data and configurations.")
+                st.info("No data available to generate sentiment heatmap by category. Ensure reviews are classified and sentiment scores are present.")
+            # --- End Sentiment Heatmap Section ---
 
+            # Display results DataFrame below visualizations
+            st.write("### Raw Analysis Data")
+            st.dataframe(st.session_state.results_df, width=2000) # Set a large width
+
+            # Add download button for CSV export
+            csv = st.session_state.results_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label=":material/download: Download Results as CSV",
+                data=csv,
+                file_name='text_analysis_results.csv',
+                mime='text/csv',
+                help="Download the complete analysis results as a CSV file"
+            )
         else:
-            st.warning("Please configure at least one classification question with categories and select review sources, and ensure reviews are loaded.")
+            st.info("No results to display. Please check your input data and configurations.")
+
+    else:
+        st.warning("Please configure at least one classification question with categories and select review sources, and ensure reviews are loaded.")
